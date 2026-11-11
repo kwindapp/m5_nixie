@@ -31,6 +31,7 @@ const uint32_t RANDOM_TIME = 4800, FRAME_TIME = 85;
 const uint32_t CINEMATIC_CLOCK_RETURN_MS = 30000UL; // From animation start
 const uint32_t AUTO_CINEMATIC_INTERVAL_MS = 300000UL;
 bool autoCinematic = false;
+int lastKittBrightness = -1;
 uint8_t cinematicStyle = 0; // 0 outside-in, 1 KITT traveling 911
 bool nextAutoKitt = false;
 bool clockModeActive = true;
@@ -301,17 +302,22 @@ void changeNixieBrightness(int delta) {
 }
 // Cinematic 2: Nixie tubes only. Never switch RGB LEDs on.
 void endAnimationLights() {
+  // Restore saved Nixie brightness after temporary KITT pulses.
+  sendCmd(String("NIXIE:BRIGHT:") + nixieBrightness);
   sendCmd("LED:OFF");
   ledOn = false;
 }
 
 void startRandom(uint8_t style = 0) {
   cinematicStyle = style;
+  lastKittBrightness = -1;
   fadeActive = false;
   ledOn = false;
   randomActive = true;
   clockModeActive = false;
   randomStart = millis();
+  // Begin at the saved brightness; animation changes are temporary.
+  sendCmd(String("NIXIE:BRIGHT:") + nixieBrightness);
   lastCinematicCycle = randomStart;
   sendCmd("LED:OFF");
   // No LED effects during cinematic animation.
@@ -497,17 +503,78 @@ void loop() {
       const char target[7] = "911930";
       char digits[7] = "000000";
       if (cinematicStyle == 1) {
-        // KITT scanner: 911 travels left to right and back across six tubes.
-        // Six positions: 911000 -> 091100 -> 009110 -> 000911,
-        // then back. Numeric zero fills inactive tubes (Mega protocol).
-        // Each position advances every 180 ms for a smooth scanner effect.
-        uint8_t phase = (elapsed / 180) % 6;
-        uint8_t pos = phase <= 3 ? phase : 6 - phase;
-        digits[pos] = '9';
-        digits[pos + 1] = '1';
-        digits[pos + 2] = '1';
-        // Last 700 ms resolve to the full Porsche signature.
-        if (elapsed >= 4100) memcpy(digits, target, sizeof(digits));
+        // KITT 3.0: global Nixie brightness follows the scanner rhythm.
+        // The current Mega command adjusts ALL tubes together, not each tube.
+        // Cap pulses at the user's saved brightness; never overwrite NVS.
+        // Send only on changes to avoid unnecessary serial traffic.
+        uint8_t pct = 100;
+        if (elapsed < 1150) {
+          // Breathing sweep: bright center of each scanner beat.
+          uint16_t phase = elapsed % 180;
+          pct = 42 + (phase < 90 ? phase * 58 / 90 : (180 - phase) * 58 / 90);
+        } else if (elapsed < 2300) {
+          // Accelerating flashes, with higher contrast.
+          pct = ((elapsed / 90) % 2) ? 100 : 48;
+        } else if (elapsed < 3050) {
+          // Ghost trail: soft, pulsing glow.
+          pct = ((elapsed / 120) % 2) ? 68 : 35;
+        } else if (elapsed < 3650) {
+          // Left/right power flashes.
+          pct = ((elapsed / 130) % 2) ? 100 : 28;
+        } else if (elapsed < 3890) {
+          pct = ((elapsed / 80) % 2) ? 18 : 100;
+        } else if (elapsed < 4550) {
+          // Signature reveal ramps up to the user's selected level.
+          pct = 25 + (elapsed - 3890) * 75 / 660;
+        }
+        uint8_t actual = (uint16_t)nixieBrightness * pct / 100;
+        if (lastKittBrightness != actual) {
+          sendCmd(String("NIXIE:BRIGHT:") + actual);
+          lastKittBrightness = actual;
+        }
+        // AIR WERK KITT 2.0: sweeping 911, accelerating scanner, echo,
+        // dramatic blackout, then a staggered Porsche 911930 reveal.
+        // The Mega DISPLAY protocol supports digits 0-9, so background = 0.
+        if (elapsed < 1150) {
+          // Smooth pendulum sweep, left -> right -> left (180 ms per step).
+          uint8_t phase = (elapsed / 180) % 6;
+          uint8_t pos = phase <= 3 ? phase : 6 - phase;
+          digits[pos] = '9'; digits[pos + 1] = '1'; digits[pos + 2] = '1';
+        } else if (elapsed < 2300) {
+          // Scanner accelerates: 120 -> 90 -> 65 ms per step.
+          uint32_t t = elapsed - 1150;
+          uint8_t step;
+          if (t < 480) step = t / 120;
+          else if (t < 840) step = 4 + (t - 480) / 90;
+          else step = 8 + (t - 840) / 65;
+          uint8_t phase = step % 6;
+          uint8_t pos = phase <= 3 ? phase : 6 - phase;
+          digits[pos] = '9'; digits[pos + 1] = '1'; digits[pos + 2] = '1';
+        } else if (elapsed < 3050) {
+          // Ghost trail: the leading 911 passes over a dimmer numeric echo.
+          // (Nixie brightness is global, so echo is represented by digits.)
+          uint8_t phase = ((elapsed - 2300) / 95) % 6;
+          uint8_t pos = phase <= 3 ? phase : 6 - phase;
+          uint8_t tail = pos > 0 ? pos - 1 : 3;
+          digits[tail] = '1';
+          digits[pos] = '9'; digits[pos + 1] = '1'; digits[pos + 2] = '1';
+        } else if (elapsed < 3650) {
+          // Twin scanner flashes, alternating ends: 911___ / ___911.
+          uint8_t pos = ((elapsed - 3050) / 130) % 2 ? 3 : 0;
+          digits[pos] = '9'; digits[pos + 1] = '1'; digits[pos + 2] = '1';
+        } else if (elapsed < 3890) {
+          // Two brief all-zero beats before the signature appears.
+          if (((elapsed - 3650) / 80) % 2 == 0)
+            memcpy(digits, "911911", sizeof(digits));
+        } else if (elapsed < 4110) {
+          memcpy(digits, "900000", sizeof(digits));
+        } else if (elapsed < 4330) {
+          memcpy(digits, "911000", sizeof(digits));
+        } else if (elapsed < 4550) {
+          memcpy(digits, "911930", sizeof(digits));
+        } else {
+          memcpy(digits, target, sizeof(digits));
+        }
       } else {
 
       if (elapsed < 800) {
