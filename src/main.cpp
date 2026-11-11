@@ -187,6 +187,11 @@ void sendCmd(const String& cmd) {
   NixieSerial.println(cmd);
   Serial.print("UART TX: "); Serial.println(cmd);
   ++txCount;
+  if (cmd == "MODE:CLOCK") {
+    NixieSerial.println("DOTS:ON");
+    Serial.println("UART TX: DOTS:ON");
+    ++txCount;
+  }
 }
 void sendDisplay(const String& digits) {
   nixie = digits;
@@ -419,6 +424,7 @@ void setup() {
   delay(250);
   // Restore last saved user settings (first boot defaults to LED OFF).
   restoreAirWerkOutputs();
+  sendCmd("DOTS:ON"); // Default: all four separator dots continuously lit (Mega support required).
   sendCmd("LED:STATUS");
   sendCmd("NIXIE:STATUS");
   // A delayed OFF handles a Mega that boots after the ESP32.
