@@ -6,6 +6,7 @@
 #include <esp_wifi.h>
 #include <esp_arduino_version.h>
 #include <string.h>
+#include <math.h>
 
 // AIR WERK graphical controller for ORIGINAL M5Stack Core (non-touch)
 // ESP32 GPIO17 TX -> Mega RX1 pin 19; GND -> GND.
@@ -56,6 +57,7 @@ uint8_t ecuViewPage = 0;
 uint8_t ecuDisplay = 0; // 0 none, 1 RPM, 2 battery, 3 engine temp, 4 throttle, 5 pedal
 uint32_t lastECUDisplayMs = 0;
 uint32_t lastECUDrawMs = 0;
+uint32_t lastECUDebugMs = 0;
 bool espNowReady = false;
 
 void acceptECUPacket(const uint8_t* data, int len) {
@@ -150,19 +152,32 @@ void updateECUNixie() {
   lastECUDisplayMs = millis();
   DashPacket d; uint32_t age, packets;
   if (!readECU(d, age, packets)) {
-    // Never display a stale engine measurement as live data.
+    if (millis() - lastECUDebugMs >= 1000) {
+      lastECUDebugMs = millis();
+      Serial.printf("ECU: NO LIVE PACKET (age=%lu ms, count=%lu)\n",
+                    (unsigned long)age, (unsigned long)packets);
+    }
     if (nixie != "------") { sendCmd("MODE:CLOCK"); nixie = "------"; }
     return;
   }
-  float v = 0;
+  float v = NAN;
   switch (ecuDisplay) {
-    case 1: v = d.rpm; break;
-    case 2: v = d.batt * 100.0f; break;    // 12.34V => 001234
-    case 3: v = d.motor * 10.0f; break;   // 85.6C => 000856
-    case 4: v = d.dk * 10.0f; break;      // 98.1% => 000981
+    case 1: v = (float)d.rpm; break;
+    case 2: v = d.batt * 100.0f; break;   // 12.34V -> 001234
+    case 3: v = d.motor * 10.0f; break;  // 85.6C -> 000856
+    case 4: v = d.dk * 10.0f; break;     // 98.1% -> 000981
     case 5: v = d.gp * 10.0f; break;
   }
-  if (!isfinite(v) || v < 0 || v > 999999) return;
+  if (millis() - lastECUDebugMs >= 1000) {
+    lastECUDebugMs = millis();
+    Serial.printf("ECU mode=%u packets=%lu age=%lu RPM=%u batt=%.3f motor=%.3f dk=%.3f gp=%.3f funk=%u scaled=%.3f\n",
+                  ecuDisplay, (unsigned long)packets, (unsigned long)age,
+                  d.rpm, d.batt, d.motor, d.dk, d.gp, d.funk, v);
+  }
+  if (!isfinite(v) || v < 0 || v > 999999) {
+    Serial.printf("ECU mode %u INVALID scaled value %.3f; no Nixie update\n", ecuDisplay, v);
+    return;
+  }
   char digits[7];
   snprintf(digits, sizeof(digits), "%06lu", (unsigned long)(v + 0.5f));
   if (nixie != digits) sendDisplay(String(digits));
@@ -384,6 +399,8 @@ void selectItem() {
       ecuDisplay = selected - 19;
       clockModeActive = false;
       nixie = "------"; // force first valid update
+      lastECUDisplayMs = millis() - 250;
+      Serial.printf("ECU NIXIE selected: mode %u\n", ecuDisplay);
       break;
     case 26: stopwatchMode=false; stopStopwatch(); ecuDisplay = 0; nixie = "CLOCK"; sendCmd("MODE:CLOCK"); clockModeActive = true; lastCinematicCycle = millis(); break;
   }
